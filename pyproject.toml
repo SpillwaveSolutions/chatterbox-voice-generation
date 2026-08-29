@@ -2,6 +2,13 @@
 name = "chatterbox-voice-generation"
 version = "0.1.0"
 requires-python = ">=3.12, <3.14"
+# Root env installs the workspace lib so `uv sync && uv run pytest libs/...`
+# works from a fresh clone. This workspace source never crosses the git
+# boundary — consumers install libs/tts_chatterbox by subdirectory git URL.
+dependencies = ["tts-chatterbox"]
+
+[tool.uv.sources]
+tts-chatterbox = { workspace = true }
 
 [tool.uv.workspace]
 members = ["libs/*", "services/*"]
@@ -27,4 +34,8 @@ norecursedirs = [
 dev = [
     "pytest>=9.0.2",
     "pytest-mock>=3.15.1",
+    # test deps for libs/tts_chatterbox/tests/test_store.py (member dev groups
+    # are not synced into the root env by `uv sync`).
+    "moto>=5.2",
+    "requests>=2.31",
 ]
