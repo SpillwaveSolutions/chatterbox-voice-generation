@@ -1,0 +1,149 @@
+name: build-images
+
+# Tag-triggered image publishing to GHCR. Adapted from the proven
+# build-chatterbox-worker.yml in towardsai-course-creation (the origin repo of
+# this extraction).
+#
+# Publishes on every v* tag:
+#   ghcr.io/<owner>/chatterbox-tts:<tag>            multi-arch (amd64 + arm64)
+#   ghcr.io/<owner>/chatterbox-runpod-worker:<tag>  amd64 only (CUDA)
+#
+# Multi-arch CPU image (extraction research, Pitfall 6): an amd64-only image
+# would silently regress Apple Silicon local dev to QEMU emulation — CPU synth
+# (already ~3.5 min cold start) degrades badly under emulation and the 8g
+# mem-limit behavior shifts. Each arch builds NATIVELY (amd64 on ubuntu-latest,
+# arm64 on ubuntu-24.04-arm — GA for private repos since 2026-01-29), then a
+# merge job stitches the manifest list with `docker buildx imagetools create`.
+#
+# Auth: the built-in GITHUB_TOKEN with `packages: write` only — NO PAT, no
+# other secrets. The repo owner is an org, so the token can publish org
+# packages directly.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  cpu-image:
+    name: cpu image (linux/${{ matrix.arch }})
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Lowercase the owner for the GHCR namespace (ghcr.io requires lowercase).
+      - name: Resolve image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/chatterbox-tts" >> "$GITHUB_OUTPUT"
+
+      # Per-arch tag suffix; the merge job below publishes the combined tag.
+      # Root build context is load-bearing: the Dockerfile COPYs
+      # services/chatterbox-tts/{pyproject.toml,src}.
+      - name: Build + push (per-arch)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: services/chatterbox-tts/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          tags: ${{ steps.image.outputs.name }}:${{ github.ref_name }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=chatterbox-tts-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=chatterbox-tts-${{ matrix.arch }}
+
+  cpu-image-merge:
+    name: cpu image (multi-arch manifest)
+    needs: cpu-image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/chatterbox-tts" >> "$GITHUB_OUTPUT"
+
+      - name: Merge per-arch tags into the multi-arch tag
+        run: |
+          docker buildx imagetools create \
+            -t "${{ steps.image.outputs.name }}:${{ github.ref_name }}" \
+            "${{ steps.image.outputs.name }}:${{ github.ref_name }}-amd64" \
+            "${{ steps.image.outputs.name }}:${{ github.ref_name }}-arm64"
+
+      - name: Summary
+        run: |
+          echo "### Pushed \`${{ steps.image.outputs.name }}:${{ github.ref_name }}\` (amd64+arm64)" >> "$GITHUB_STEP_SUMMARY"
+
+  gpu-worker:
+    name: gpu worker (linux/amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # The image is ~8-10GB (torch cu124 + a baked ~3GB HF snapshot). Free the
+      # preinstalled toolchains so the build does not run the runner out of disk.
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af || true
+          df -h /
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Lowercase the owner for the GHCR namespace (ghcr.io requires lowercase).
+      - name: Resolve image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/chatterbox-runpod-worker" >> "$GITHUB_OUTPUT"
+
+      # amd64 only — RunPod GPUs are x86_64/CUDA. Built from the repo root: the
+      # Dockerfile COPYs services/chatterbox-tts/src (vendored synth chain).
+      - name: Build + push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: services/chatterbox-runpod-worker/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.image.outputs.name }}:${{ github.ref_name }}
+          cache-from: type=gha,scope=chatterbox-runpod-worker
+          cache-to: type=gha,mode=max,scope=chatterbox-runpod-worker
+
+      - name: Summary
+        run: |
+          echo "### Pushed \`${{ steps.image.outputs.name }}:${{ github.ref_name }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Update the RunPod endpoint image ref to this tag (see docs/RUNPOD_SETUP.md)." >> "$GITHUB_STEP_SUMMARY"

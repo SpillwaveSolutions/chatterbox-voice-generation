@@ -1,0 +1,127 @@
+name: ci
+
+# Non-vacuous CI (extraction research, Pitfall 8): the CPU service has ZERO
+# test files, so a bare `pytest` on it would vacuously pass while the image is
+# broken. This workflow therefore runs FOUR independent proofs on every push
+# and PR:
+#   1. lib-tests          — the moved tts_chatterbox/artifact_store suite
+#                           (pytest exits nonzero on empty collection, so a
+#                           silently-missing test dir fails loud)
+#   2. worker-tests       — the RunPod handler suite, torch-free via
+#                           sys.modules stubs (see tests/test_handler.py)
+#   3. secret-scan        — gitleaks over the FULL history (VOICE-02 leak
+#                           discipline, enforced continuously)
+#   4. image-build-check  — build-only docker builds of BOTH Dockerfiles;
+#                           the build IS the CPU service's CI check
+#
+# No secrets are used anywhere in this workflow. Publishing lives in
+# build-images.yml (tag-triggered).
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lib-tests:
+    name: lib tests (tts_chatterbox + artifact_store)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Sync workspace
+        run: uv sync
+
+      # pytest exits 5 on empty collection — a missing/renamed tests dir can
+      # never produce a vacuous green here.
+      - name: Run lib tests
+        run: uv run pytest libs/tts_chatterbox/tests -q
+
+  worker-tests:
+    name: worker handler tests (torch-free)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      # Torch-free run per tests/test_handler.py: runpod + the model chain are
+      # sys.modules stubs. PYTHONPATH carries BOTH the worker src AND the
+      # chatterbox-tts src — the real chatterbox_tts.pronunciations module must
+      # import so test_applies_pronunciations proves actual substitution (with
+      # only the worker src on the path it falls back to an identity stub and
+      # fails). Two-path form required — see extraction plan 22-01 deviation 3.
+      - name: Run worker tests
+        run: >
+          PYTHONPATH=services/chatterbox-runpod-worker/src:services/chatterbox-tts/src
+          uv run --no-project --with pytest --with pytest-mock --with httpx
+          python -m pytest services/chatterbox-runpod-worker/tests -q
+
+  secret-scan:
+    name: gitleaks (full history)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # Dockerized gitleaks instead of gitleaks-action: the action requires a
+      # GITLEAKS_LICENSE secret for organization repos; this repo's CI uses no
+      # secrets at all. The GIT_CONFIG_* env marks /repo safe inside the
+      # container (uid mismatch would otherwise trip git's dubious-ownership
+      # guard). `gitleaks git` scans the full commit history (v8.19+ verbs).
+      - name: Run gitleaks over full history
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo" \
+            -e GIT_CONFIG_COUNT=1 \
+            -e GIT_CONFIG_KEY_0=safe.directory \
+            -e GIT_CONFIG_VALUE_0=/repo \
+            ghcr.io/gitleaks/gitleaks:latest git /repo --verbose
+
+  image-build-check:
+    name: image build-only (${{ matrix.image }})
+    strategy:
+      matrix:
+        include:
+          - image: chatterbox-tts
+            dockerfile: services/chatterbox-tts/Dockerfile
+          - image: chatterbox-runpod-worker
+            dockerfile: services/chatterbox-runpod-worker/Dockerfile
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # The worker image is ~8-10GB (torch cu124 + a baked HF snapshot). Free
+      # the preinstalled toolchains so the build does not run out of disk.
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af || true
+          df -h /
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Build-only, no push, no registry login: proves both Dockerfiles build
+      # from the repo-root context (the worker Dockerfile COPYs
+      # services/chatterbox-tts/src — root context is load-bearing).
+      - name: Build ${{ matrix.image }}
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: false
+          cache-from: type=gha,scope=ci-${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=ci-${{ matrix.image }}
