@@ -1,0 +1,16 @@
+# LEAK DENYLIST — commit zero. This repo must never contain voice-reference
+# audio (biometric data), cloned-voice output, or credentials. Do not weaken
+# these entries; per-commit gitleaks + full-history blob scans enforce them.
+voices/
+*.wav
+*.mp3
+*.m4a
+.env
+*.env
+secrets/
+**/storage_state.json
+
+# Python build/runtime artifacts
+__pycache__/
+*.py[cod]
+.venv/
