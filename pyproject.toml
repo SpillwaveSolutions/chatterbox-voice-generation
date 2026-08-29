@@ -1,0 +1,30 @@
+[project]
+name = "chatterbox-voice-generation"
+version = "0.1.0"
+requires-python = ">=3.12, <3.14"
+
+[tool.uv.workspace]
+members = ["libs/*", "services/*"]
+# The chatterbox-tts service pins python ==3.11.* (chatterbox 0.1.6 + torch 2.6
+# wheels) while the rest of the workspace is >=3.12. Exclude it from the
+# host-side workspace; its deps install inside its own container via
+# `pip install -e .` against the COPY'd src layout.
+exclude = ["services/chatterbox-tts", "services/chatterbox-runpod-worker"]
+
+[tool.pytest.ini_options]
+addopts = "-x -q"
+# Services EXCLUDED from the uv workspace build their deps in their own containers
+# (torch / runpod), so their tests can't import in the root env — run
+# them per-package (`uv run --package <name> pytest …`) or in CI. Keep recursive
+# root collection from choking on them.
+norecursedirs = [
+    "services/chatterbox-tts",
+    "services/chatterbox-runpod-worker",
+    ".venv",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-mock>=3.15.1",
+]
