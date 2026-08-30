@@ -48,5 +48,15 @@ this asymmetry; it mirrors the two transports' actual semantics (docs/CONSUMPTIO
 
 ## Repo visibility
 
-Repo visibility: PENDING — recorded by extraction plan 22-03 (decided before the first push;
-package visibility follows the repo decision).
+Repo visibility: **public** — decided 2026-08-30 by the developer (extraction plan 22-03,
+recorded before the first push; GHCR package visibility follows the repo decision).
+
+Rationale: the content is code-only (VOICE-02 gates guarantee no voice audio, no secrets —
+all commits gitleaks-clean), and public visibility eliminates all three downstream auth
+burdens (git credential in the flow-runner docker build, `docker login ghcr.io` for compose
+pulls, RunPod registry credential for worker cold-pulls) while matching INTG-01's intent
+that another pipeline can adopt this library without credentials.
+
+Consent notice (INTG-01): voice references are biometric data. Cloning a voice with this
+library requires the speaker's explicit permission; never commit or publish voice-reference
+audio. See README.
