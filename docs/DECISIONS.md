@@ -60,3 +60,15 @@ that another pipeline can adopt this library without credentials.
 Consent notice (INTG-01): voice references are biometric data. Cloning a voice with this
 library requires the speaker's explicit permission; never commit or publish voice-reference
 audio. See README.
+
+### Published v0.1.0 image digests (build-images run 33320337252, 2026-08-30)
+
+| Image | Digest |
+|---|---|
+| `ghcr.io/spillwavesolutions/chatterbox-tts:v0.1.0` (manifest list, amd64+arm64) | `sha256:a7574af428897a1f1daba5c7f575cd6b1a3624761234c539f2fcf78debca6dc5` |
+| `ghcr.io/spillwavesolutions/chatterbox-runpod-worker:v0.1.0` (amd64) | `sha256:2da72175cbc8e84c2a9fd574b360cf1fc3e0628c4e1b13583e6a240c5ed6a53e` |
+
+Per-arch CPU manifests inside the list: amd64
+`sha256:a8cdd567d32fd5423f4422b22cf53b775dee7bc00607c74600d3ea93416a8653`, arm64
+`sha256:30344d1ae6632cd6eddfd5d57b077a454672b470df481e26c94f06e38550f5db`. Consumers
+(plan 22-04 flip commit, RunPod endpoint) pin the tag and record the list digest above.
